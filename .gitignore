@@ -1,0 +1,13 @@
+# Environments
+.env
+.venv
+venv/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OpenEnv generated
+uv.lock

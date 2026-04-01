@@ -1,0 +1,13 @@
+spec_version: 1
+name: fraud_triage_env
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+tasks:
+  - id: easy_fraud_detection
+    name: Easy Fraud Detection
+  - id: medium_fraud_detection
+    name: Medium Fraud Detection
+  - id: hard_fraud_detection
+    name: Hard Fraud Detection
