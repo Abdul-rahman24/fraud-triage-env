@@ -38,7 +38,7 @@ except Exception as e:  # pragma: no cover
 try:
     from ..models import FraudTriageAction, FraudTriageObservation
     from .fraud_triage_env_environment import FraudTriageEnvironment
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
     from models import FraudTriageAction, FraudTriageObservation
     from server.fraud_triage_env_environment import FraudTriageEnvironment
 
