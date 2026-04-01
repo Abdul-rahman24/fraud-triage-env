@@ -35,10 +35,11 @@ except Exception as e:  # pragma: no cover
         "openenv is required for the web interface. Install dependencies with '\n    uv sync\n'"
     ) from e
 
+# AFTER — catches both ImportError and ModuleNotFoundError
 try:
     from ..models import FraudTriageAction, FraudTriageObservation
     from .fraud_triage_env_environment import FraudTriageEnvironment
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     from models import FraudTriageAction, FraudTriageObservation
     from server.fraud_triage_env_environment import FraudTriageEnvironment
 
