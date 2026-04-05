@@ -33,7 +33,7 @@ def run_baseline():
         "hard_fraud_detection"
     ]
 
-    print(f"🚀 Starting Inference using model: {MODEL_NAME}...")
+    print("START")
     
     with FraudTriageEnv(base_url="http://localhost:8000").sync() as env:
         for task in tasks:
@@ -97,7 +97,7 @@ def run_baseline():
                 print(f"❌ Error during task {task}: {str(e)}")
 
     print(f"{'-'*50}")
-    print("🎉 Inference complete!")
+    print("END")
 
 if __name__ == "__main__":
     run_baseline()
