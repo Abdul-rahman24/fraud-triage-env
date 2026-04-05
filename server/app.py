@@ -8,7 +8,7 @@ from openenv.core.env_server.http_server import create_app
 try:
     from ..models import FraudTriageAction, FraudTriageObservation
     from .fraud_triage_env_environment import FraudTriageEnvironment
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):  # <-- WE ADDED IMPORTERROR HERE!
     from models import FraudTriageAction, FraudTriageObservation
     from server.fraud_triage_env_environment import FraudTriageEnvironment
 
