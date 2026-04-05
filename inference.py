@@ -86,7 +86,7 @@ def run_baseline():
                     
                     feedback = result.observation.metadata.get('feedback', 'No feedback provided.')
                     
-                    print(f"  Step {steps}: Agent decided '{action.decision}' -> Score: +{reward}")
+                    print(f"STEP: {action.decision} | Score: {result.reward} | Reason: {action.reasoning}")
                     print(f"          Reasoning: {action.reasoning}")
                     print(f"          Feedback: {feedback}\n")
 
