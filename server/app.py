@@ -4,8 +4,13 @@ FastAPI application for the Fraud Triage Env Environment.
 
 from openenv.core.env_server.http_server import create_app
 
-from models import FraudTriageAction, FraudTriageObservation
-from server.fraud_triage_env_environment import FraudTriageEnvironment
+# The original OpenEnv import structure that handles the uv run packaging!
+try:
+    from ..models import FraudTriageAction, FraudTriageObservation
+    from .fraud_triage_env_environment import FraudTriageEnvironment
+except ModuleNotFoundError:
+    from models import FraudTriageAction, FraudTriageObservation
+    from server.fraud_triage_env_environment import FraudTriageEnvironment
 
 app = create_app(
     FraudTriageEnvironment,
