@@ -10,6 +10,6 @@ __pycache__/
 .pytest_cache/
 
 # OpenEnv generated
-uv.lock
+
 
 validate-submission.sh
