@@ -11,3 +11,5 @@ __pycache__/
 
 # OpenEnv generated
 uv.lock
+
+validate-submission.sh
