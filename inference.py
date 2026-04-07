@@ -158,9 +158,13 @@ def run_baseline():
                         print(f"    Action: {action.decision} | Reason: {action.reasoning}", flush=True)
 
                     # ==========================================
-                    # STRICT FORMATTING: [END] block
+                    # STRICT FORMATTING: [END] block WITH CLAMP FIX
                     # ==========================================
-                    final_score = total_score / steps if steps > 0 else 0
+                    raw_score = total_score / steps if steps > 0 else 0.0
+                    
+                    # Force the score to be strictly between 0.01 and 0.99
+                    final_score = max(0.01, min(0.99, raw_score))
+                    
                     print(f"[END] task={task} score={final_score:.2f} steps={steps}", flush=True)
                     
                 except Exception as e:
