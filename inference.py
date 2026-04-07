@@ -144,25 +144,26 @@ def run_baseline():
                         if len(transaction_memory) > 3:
                             transaction_memory.pop(0)
                         
-                        reward = float(result.reward or 0.0)
-                        total_score += reward
+                        # ==========================================
+                        # DOUBLE CLAMP FIX: Clamp the step reward
+                        # ==========================================
+                        raw_reward = float(result.reward or 0.0)
+                        clamped_reward = max(0.01, min(0.99, raw_reward))
+                        
+                        total_score += clamped_reward
                         steps += 1
                         done = result.done
                         
                         # ==========================================
                         # STRICT FORMATTING: [STEP] block
                         # ==========================================
-                        print(f"[STEP] step={steps} reward={reward}", flush=True)
-                        
-                        # Print reasoning on a separate line so it doesn't break their regex
+                        print(f"[STEP] step={steps} reward={clamped_reward:.2f}", flush=True)
                         print(f"    Action: {action.decision} | Reason: {action.reasoning}", flush=True)
 
                     # ==========================================
-                    # STRICT FORMATTING: [END] block WITH CLAMP FIX
+                    # DOUBLE CLAMP FIX: Clamp the final score
                     # ==========================================
                     raw_score = total_score / steps if steps > 0 else 0.0
-                    
-                    # Force the score to be strictly between 0.01 and 0.99
                     final_score = max(0.01, min(0.99, raw_score))
                     
                     print(f"[END] task={task} score={final_score:.2f} steps={steps}", flush=True)
