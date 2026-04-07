@@ -18,10 +18,6 @@ API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-pro")
 
 def get_env_url(max_retries=15, delay=2):
-    """
-    PROFESSIONAL FIX: Auto-Discovery Scanner
-    Searches standard Docker hostnames to find the server.
-    """
     print("🔍 Searching for live environment server...", flush=True)
     urls_to_try = [
         os.environ.get("ENV_BASE_URL"),
@@ -61,10 +57,8 @@ def run_baseline():
         print("❌ Error: API Key is missing. Set HF_TOKEN or OPENAI_API_KEY.", flush=True)
         return
 
-    # 1. FIND THE SERVER URL DYNAMICALLY
     ENV_URL = get_env_url()
 
-    # 2. INITIALIZE CLIENT
     llm_client = OpenAI(
         api_key=API_KEY,
         base_url=API_BASE_URL
@@ -81,10 +75,6 @@ def run_baseline():
     try:
         with FraudTriageEnv(base_url=ENV_URL).sync() as env:
             for task in tasks:
-                
-                # ==========================================
-                # STRICT FORMATTING: [START] block
-                # ==========================================
                 print(f"[START] task={task}", flush=True)
                 
                 try:
@@ -93,15 +83,12 @@ def run_baseline():
                     total_score = 0.0
                     steps = 0
                     
-                    # INNOVATION: AGENT MEMORY
                     transaction_memory = []
 
                     while not done:
                         obs = result.observation
+                        memory_str = "\n".join(transaction_memory) if transaction_memory else "None"
                         
-                        memory_str = "\n".join(transaction_memory) if transaction_memory else "None (First transaction of this session)"
-                        
-                        # INNOVATION: CHAIN OF THOUGHT PROMPTING
                         prompt = f"""
                         You are a senior fraud detection analyst. 
                         Analyze the following transaction data and make a strict triage decision.
@@ -116,15 +103,15 @@ def run_baseline():
                         - Credit Score: {obs.credit_score}
                         - Has Previous Chargebacks: {obs.has_chargebacks}
                         
-                        Reasoning Framework (Think step-by-step):
-                        1. Evaluate Amount vs. Category: Is this an unusually high amount for this merchant type? Are there patterns from the recent history?
-                        2. Evaluate Trust: Does the credit score suggest financial stability?
-                        3. Evaluate History: Are there previous chargebacks indicating a pattern of disputes or stolen cards?
+                        Reasoning Framework:
+                        1. Evaluate Amount vs. Category
+                        2. Evaluate Trust
+                        3. Evaluate History
                         
                         Rules:
-                        - 'Approve': Safe, normal transaction (High credit, low amount, no chargebacks).
-                        - 'Reject': High probability of fraud (High amount, low credit, previous chargebacks).
-                        - 'Flag': Uncertain, requires human review (Conflicting signals, e.g., high credit but previous chargebacks).
+                        - 'Approve': Safe, normal transaction.
+                        - 'Reject': High probability of fraud.
+                        - 'Flag': Uncertain, requires human review.
                         """
 
                         completion = llm_client.beta.chat.completions.parse(
@@ -139,33 +126,20 @@ def run_baseline():
                         action = completion.choices[0].message.parsed
                         result = env.step(action)
                         
-                        # Store memory for the next loop
                         transaction_memory.append(f"Prev - Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {action.decision}")
                         if len(transaction_memory) > 3:
                             transaction_memory.pop(0)
                         
-                        # ==========================================
-                        # DOUBLE CLAMP FIX: Clamp the step reward
-                        # ==========================================
-                        raw_reward = float(result.reward or 0.0)
-                        clamped_reward = max(0.01, min(0.99, raw_reward))
-                        
-                        total_score += clamped_reward
+                        reward = float(result.reward or 0.0)
+                        total_score += reward
                         steps += 1
                         done = result.done
                         
-                        # ==========================================
-                        # STRICT FORMATTING: [STEP] block
-                        # ==========================================
-                        print(f"[STEP] step={steps} reward={clamped_reward:.2f}", flush=True)
+                        print(f"[STEP] step={steps} reward={reward:.2f}", flush=True)
                         print(f"    Action: {action.decision} | Reason: {action.reasoning}", flush=True)
 
-                    # ==========================================
-                    # DOUBLE CLAMP FIX: Clamp the final score
-                    # ==========================================
-                    raw_score = total_score / steps if steps > 0 else 0.0
-                    final_score = max(0.01, min(0.99, raw_score))
-                    
+                    # SUM THE REWARDS. DO NOT DIVIDE BY STEPS.
+                    final_score = max(0.01, min(0.99, total_score))
                     print(f"[END] task={task} score={final_score:.2f} steps={steps}", flush=True)
                     
                 except Exception as e:

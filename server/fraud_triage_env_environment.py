@@ -56,21 +56,23 @@ class FraudTriageEnvironment(Environment):
         return FraudTriageObservation(
             **obs_data,
             done=False,
-            reward=0.01,  # FIX 1: Changed from 0.0 to 0.01 to avoid strict range errors
+            reward=0.0, 
             metadata={"step": self._state.step_count}
         )
 
     def step(self, action: FraudTriageAction) -> FraudTriageObservation:  # type: ignore[override]
         self._state.step_count += 1
         
+        # PROPER REINFORCEMENT LEARNING SCALING
+        # 3 steps * 0.33 = 0.99 Total Score
         if action.decision == self._current_truth:
-            reward = 0.99  # FIX 2: Changed from 1.0 to 0.99
+            reward = 0.33  
             feedback = f"Correct! Expected {self._current_truth}."
         elif action.decision == "Flag":
-            reward = 0.4
+            reward = 0.15
             feedback = f"Partial credit. Flagged safely, but {self._current_truth} was expected."
         else:
-            reward = 0.01  # FIX 3: Changed from 0.0 to 0.01
+            reward = 0.01  
             feedback = f"Incorrect. Expected {self._current_truth}."
 
         done = self._state.step_count >= self.max_steps
