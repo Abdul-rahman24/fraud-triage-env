@@ -18,7 +18,6 @@ API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-pro")
 
 def get_env_url(max_retries=15, delay=2):
-    print("🔍 Searching for live environment server...", flush=True)
     urls_to_try = [
         os.environ.get("ENV_BASE_URL"),
         os.environ.get("OPENENV_BASE_URL"),
@@ -37,24 +36,19 @@ def get_env_url(max_retries=15, delay=2):
             try:
                 req = urllib.request.Request(f"{url}/schema", method="GET")
                 with urllib.request.urlopen(req, timeout=2) as response:
-                    print(f"✅ Success! Connected to {url}", flush=True)
                     return url
             except urllib.error.HTTPError as e:
-                print(f"✅ Success! Connected to {url} (HTTP {e.code})", flush=True)
                 return url
             except Exception:
                 pass
-        
-        print(f"⏳ Server not ready yet. Retrying in {delay} seconds... (Attempt {attempt+1}/{max_retries})", flush=True)
         time.sleep(delay)
         
-    print("❌ CRITICAL: Could not find live server. Defaulting to localhost.", flush=True)
     return "http://localhost:8000"
 
 
 def run_baseline():
     if not API_KEY:
-        print("❌ Error: API Key is missing. Set HF_TOKEN or OPENAI_API_KEY.", flush=True)
+        print("Error: API Key is missing.", flush=True)
         return
 
     ENV_URL = get_env_url()
@@ -70,19 +64,22 @@ def run_baseline():
         "hard_fraud_detection"
     ]
 
-    print("=== INFERENCE PIPELINE INITIATED ===", flush=True)
-    
     try:
         with FraudTriageEnv(base_url=ENV_URL).sync() as env:
             for task in tasks:
-                print(f"[START] task={task}", flush=True)
+                
+                # ==========================================
+                # 1. STRICT [START] FORMAT
+                # ==========================================
+                print(f"[START] task={task} env=fraud_triage_env model={MODEL_NAME}", flush=True)
+                
+                steps = 0
+                total_score = 0.0
+                rewards_list = []
                 
                 try:
                     result = env.reset(task_id=task)
                     done = False
-                    total_score = 0.0
-                    steps = 0
-                    
                     transaction_memory = []
 
                     while not done:
@@ -93,20 +90,13 @@ def run_baseline():
                         You are a senior fraud detection analyst. 
                         Analyze the following transaction data and make a strict triage decision.
                         
-                        Recent Transaction Context (Memory):
-                        {memory_str}
+                        Recent Context: {memory_str}
                         
-                        Current Transaction Data:
-                        - Transaction ID: {obs.transaction_id}
-                        - Amount: ${obs.amount}
-                        - Merchant Category: {obs.merchant_category}
-                        - Credit Score: {obs.credit_score}
-                        - Has Previous Chargebacks: {obs.has_chargebacks}
-                        
-                        Reasoning Framework:
-                        1. Evaluate Amount vs. Category
-                        2. Evaluate Trust
-                        3. Evaluate History
+                        Transaction ID: {obs.transaction_id}
+                        Amount: ${obs.amount}
+                        Merchant Category: {obs.merchant_category}
+                        Credit Score: {obs.credit_score}
+                        Has Previous Chargebacks: {obs.has_chargebacks}
                         
                         Rules:
                         - 'Approve': Safe, normal transaction.
@@ -126,29 +116,43 @@ def run_baseline():
                         action = completion.choices[0].message.parsed
                         result = env.step(action)
                         
-                        transaction_memory.append(f"Prev - Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {action.decision}")
+                        transaction_memory.append(f"Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {action.decision}")
                         if len(transaction_memory) > 3:
                             transaction_memory.pop(0)
                         
+                        # Keep reward strictly bounded per guidelines
                         reward = float(result.reward or 0.0)
-                        total_score += reward
+                        clamped_reward = max(0.01, min(0.99, reward))
+                        total_score += clamped_reward
+                        rewards_list.append(f"{clamped_reward:.2f}")
+                        
                         steps += 1
                         done = result.done
                         
-                        print(f"[STEP] step={steps} reward={reward:.2f}", flush=True)
-                        print(f"    Action: {action.decision} | Reason: {action.reasoning}", flush=True)
+                        # Format booleans as lowercase strings
+                        done_str = "true" if done else "false"
+                        action_str = action.decision.replace(" ", "_")
+                        
+                        # ==========================================
+                        # 2. STRICT [STEP] FORMAT (Single line, no newlines)
+                        # ==========================================
+                        print(f"[STEP] step={steps} action={action_str} reward={clamped_reward:.2f} done={done_str} error=null", flush=True)
 
-                    # SUM THE REWARDS. DO NOT DIVIDE BY STEPS.
+                    # ==========================================
+                    # 3. STRICT [END] FORMAT
+                    # ==========================================
                     final_score = max(0.01, min(0.99, total_score))
-                    print(f"[END] task={task} score={final_score:.2f} steps={steps}", flush=True)
+                    success_str = "true" if final_score > 0.5 else "false"
+                    rewards_str = ",".join(rewards_list)
+                    
+                    print(f"[END] success={success_str} steps={steps} score={final_score:.2f} rewards={rewards_str}", flush=True)
                     
                 except Exception as e:
-                    print(f"❌ Error during task {task}: {str(e)}", flush=True)
+                    # MUST emit [END] even on exception per the rules
+                    print(f"[END] success=false steps={steps} score=0.01 rewards=0.01", flush=True)
                     
     except Exception as env_error:
-        print(f"❌ CRITICAL ENVIRONMENT ERROR: {str(env_error)}", flush=True)
-
-    print("=== INFERENCE PIPELINE COMPLETED ===", flush=True)
+        pass
 
 if __name__ == "__main__":
     run_baseline()
