@@ -2,11 +2,15 @@ from openenv.core.env_server.types import Action, Observation
 from pydantic import Field
 
 class FraudTriageAction(Action):
-    # FIX: Changed from Literal to str to prevent 422 crash on garbage input
     decision: str = Field(
         ..., description="The triage decision. Approve (safe), Reject (fraud), Flag (uncertain case)."
     )
-    reasoning: str = Field(default="No reasoning provided.", description="Explanation for the decision.")
+    reasoning: str = Field(
+        default="No reasoning provided.", description="Explanation for the decision."
+    )
+    confidence_score: int = Field(
+        default=100, ge=1, le=100, description="Confidence level of the decision from 1 to 100."
+    )
 
 class FraudTriageObservation(Observation):
     transaction_id: str = Field(default="", description="Unique ID")

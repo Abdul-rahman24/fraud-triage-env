@@ -17,6 +17,15 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "https://generativelanguage.google
 API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-pro")
 
+# --- IDEA 2: RAG-LITE MOCK DATABASE ---
+MOCK_DATABASE = {
+    "Crypto": "- Case 101: $5000 Crypto, Credit 450, Chargebacks=True -> REJECT (High Risk Pattern)\n- Case 102: $100 Crypto, Credit 700, Chargebacks=False -> FLAG (Monitor)",
+    "Groceries": "- Case 201: $30 Groceries, Credit 720, Chargebacks=False -> APPROVE (Low Risk, Normal Behavior)",
+    "Electronics": "- Case 301: $800 Electronics, Credit 610, Chargebacks=True -> REJECT (Stolen Card Pattern)\n- Case 302: $400 Electronics, Credit 650, Chargebacks=False -> FLAG (Borderline)",
+    "Travel": "- Case 401: $45 Travel, Credit 710, Chargebacks=False -> APPROVE (Low Risk)",
+    "Retail": "- Case 501: $499 Retail, Credit 650, Chargebacks=True -> FLAG (Requires manual review due to chargebacks)"
+}
+
 def get_env_url(max_retries=15, delay=2):
     urls_to_try = [
         os.environ.get("ENV_BASE_URL"),
@@ -68,9 +77,7 @@ def run_baseline():
         with FraudTriageEnv(base_url=ENV_URL).sync() as env:
             for task in tasks:
                 
-                # ==========================================
-                # 1. STRICT [START] FORMAT
-                # ==========================================
+                # STRICT [START] FORMAT
                 print(f"[START] task={task} env=fraud_triage_env model={MODEL_NAME}", flush=True)
                 
                 steps = 0
@@ -80,47 +87,102 @@ def run_baseline():
                 try:
                     result = env.reset(task_id=task)
                     done = False
-                    transaction_memory = []
+                    transaction_memory = [] # OLD IDEA 2: Short-Term Memory
 
                     while not done:
                         obs = result.observation
-                        memory_str = "\n".join(transaction_memory) if transaction_memory else "None"
                         
-                        prompt = f"""
-                        You are a senior fraud detection analyst. 
-                        Analyze the following transaction data and make a strict triage decision.
+                        # Memory Injection
+                        memory_str = "\n".join(transaction_memory) if transaction_memory else "None (First transaction of session)"
                         
-                        Recent Context: {memory_str}
+                        # RAG Injection
+                        rag_examples = MOCK_DATABASE.get(obs.merchant_category, "No exact historical matches. Rely on standard rules.")
                         
-                        Transaction ID: {obs.transaction_id}
-                        Amount: ${obs.amount}
-                        Merchant Category: {obs.merchant_category}
-                        Credit Score: {obs.credit_score}
-                        Has Previous Chargebacks: {obs.has_chargebacks}
-                        
-                        Rules:
-                        - 'Approve': Safe, normal transaction.
-                        - 'Reject': High probability of fraud.
-                        - 'Flag': Uncertain, requires human review.
+                        transaction_data = f"""
+                        - Transaction ID: {obs.transaction_id}
+                        - Amount: ${obs.amount}
+                        - Merchant Category: {obs.merchant_category}
+                        - Credit Score: {obs.credit_score}
+                        - Has Previous Chargebacks: {obs.has_chargebacks}
                         """
 
-                        completion = llm_client.beta.chat.completions.parse(
+                        # ==========================================
+                        # AGENT 1: THE MAKER (WITH CHAIN OF THOUGHT)
+                        # ==========================================
+                        maker_prompt = f"""
+                        You are a Junior Fraud Analyst. Make an initial triage assessment based on the data.
+                        
+                        1. Recent Session Context (Memory):
+                        {memory_str}
+                        
+                        2. Historical Reference Cases for {obs.merchant_category}:
+                        {rag_examples}
+                        
+                        3. Current Transaction Data:
+                        {transaction_data}
+                        
+                        Reasoning Framework (Think step-by-step):
+                        - Step 1: Evaluate Amount vs. Category.
+                        - Step 2: Evaluate Trust (Credit Score).
+                        - Step 3: Evaluate History (Chargebacks and Session Memory).
+                        
+                        Provide a 'decision' (Approve/Reject/Flag), your step-by-step 'reasoning', and your 'confidence_score' (1-100).
+                        """
+
+                        maker_completion = llm_client.beta.chat.completions.parse(
                             model=MODEL_NAME,
                             messages=[
-                                {"role": "system", "content": "You are a precise financial API. Always adhere strictly to the schema."},
-                                {"role": "user", "content": prompt}
+                                {"role": "system", "content": "You are a precise financial API."},
+                                {"role": "user", "content": maker_prompt}
                             ],
                             response_format=FraudTriageAction,
                         )
+                        maker_action = maker_completion.choices[0].message.parsed
 
-                        action = completion.choices[0].message.parsed
-                        result = env.step(action)
+                        # ==========================================
+                        # AGENT 2: THE CHECKER
+                        # ==========================================
+                        checker_prompt = f"""
+                        You are a Senior Fraud Auditor. Review the Junior Analyst's assessment. Correct any flaws in their logic.
                         
-                        transaction_memory.append(f"Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {action.decision}")
+                        Current Transaction Data:
+                        {transaction_data}
+                        
+                        Junior Analyst's Assessment:
+                        - Proposed Decision: {maker_action.decision}
+                        - Confidence: {maker_action.confidence_score}%
+                        - Reasoning: {maker_action.reasoning}
+                        
+                        Critique their logic. Do you agree? Output the FINAL, authoritative decision (Approve/Reject/Flag), an updated reasoning, and your final confidence_score (1-100).
+                        """
+
+                        checker_completion = llm_client.beta.chat.completions.parse(
+                            model=MODEL_NAME,
+                            messages=[
+                                {"role": "system", "content": "You are a precise financial API."},
+                                {"role": "user", "content": checker_prompt}
+                            ],
+                            response_format=FraudTriageAction,
+                        )
+                        final_action = checker_completion.choices[0].message.parsed
+
+                        # ==========================================
+                        # THE GUARDRAIL
+                        # ==========================================
+                        if final_action.confidence_score < 75 and final_action.decision != "Flag":
+                            original_decision = final_action.decision
+                            final_action.decision = "Flag"
+                            final_action.reasoning = f"[GUARDRAIL TRIGGERED] Overrode '{original_decision}' to 'Flag' due to low confidence ({final_action.confidence_score}%). " + final_action.reasoning
+
+                        # Step environment
+                        result = env.step(final_action)
+                        
+                        # Update Memory for next loop
+                        transaction_memory.append(f"Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {final_action.decision}")
                         if len(transaction_memory) > 3:
                             transaction_memory.pop(0)
                         
-                        # Keep reward strictly bounded per guidelines
+                        # Clamp and log score safely
                         reward = float(result.reward or 0.0)
                         clamped_reward = max(0.01, min(0.99, reward))
                         total_score += clamped_reward
@@ -129,18 +191,12 @@ def run_baseline():
                         steps += 1
                         done = result.done
                         
-                        # Format booleans as lowercase strings
+                        # STRICT [STEP] FORMAT
                         done_str = "true" if done else "false"
-                        action_str = action.decision.replace(" ", "_")
-                        
-                        # ==========================================
-                        # 2. STRICT [STEP] FORMAT (Single line, no newlines)
-                        # ==========================================
+                        action_str = final_action.decision.replace(" ", "_")
                         print(f"[STEP] step={steps} action={action_str} reward={clamped_reward:.2f} done={done_str} error=null", flush=True)
 
-                    # ==========================================
-                    # 3. STRICT [END] FORMAT
-                    # ==========================================
+                    # STRICT [END] FORMAT
                     final_score = max(0.01, min(0.99, total_score))
                     success_str = "true" if final_score > 0.5 else "false"
                     rewards_str = ",".join(rewards_list)
@@ -148,7 +204,7 @@ def run_baseline():
                     print(f"[END] success={success_str} steps={steps} score={final_score:.2f} rewards={rewards_str}", flush=True)
                     
                 except Exception as e:
-                    # MUST emit [END] even on exception per the rules
+                    # Fail-safe emission
                     print(f"[END] success=false steps={steps} score=0.01 rewards=0.01", flush=True)
                     
     except Exception as env_error:
