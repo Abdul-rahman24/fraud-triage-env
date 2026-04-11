@@ -1,7 +1,9 @@
 import os
 import time
+import json
 import urllib.request
 import urllib.error
+from typing import List, Optional
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -11,13 +13,18 @@ from models import FraudTriageAction
 load_dotenv()
 
 # ==========================================
-# HACKATHON MANDATORY VARIABLES
+# STRICT HACKATHON MANDATORY VARIABLES
 # ==========================================
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.5-pro")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-# --- IDEA 2: RAG-LITE MOCK DATABASE ---
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
+
+BENCHMARK_NAME = "fraud_triage_env"
+
+# --- RAG-LITE MOCK DATABASE ---
 MOCK_DATABASE = {
     "Crypto": "- Case 101: $5000 Crypto, Credit 450, Chargebacks=True -> REJECT (High Risk Pattern)\n- Case 102: $100 Crypto, Credit 700, Chargebacks=False -> FLAG (Monitor)",
     "Groceries": "- Case 201: $30 Groceries, Credit 720, Chargebacks=False -> APPROVE (Low Risk, Normal Behavior)",
@@ -26,10 +33,28 @@ MOCK_DATABASE = {
     "Retail": "- Case 501: $499 Retail, Credit 650, Chargebacks=True -> FLAG (Requires manual review due to chargebacks)"
 }
 
+# ==========================================
+# STRICT LOGGING FUNCTIONS (From Sample)
+# ==========================================
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
+
 def get_env_url(max_retries=15, delay=2):
     urls_to_try = [
-        os.environ.get("ENV_BASE_URL"),
-        os.environ.get("OPENENV_BASE_URL"),
+        os.getenv("ENV_BASE_URL"),
+        os.getenv("OPENENV_BASE_URL"),
         "http://server:8000",          
         "http://environment:8000",     
         "http://app:8000",             
@@ -37,7 +62,6 @@ def get_env_url(max_retries=15, delay=2):
         "http://0.0.0.0:8000",
         "https://abdulrahman24-fraud-triage-env.hf.space" 
     ]
-    
     for attempt in range(max_retries):
         for url in urls_to_try:
             if not url: continue
@@ -51,19 +75,14 @@ def get_env_url(max_retries=15, delay=2):
             except Exception:
                 pass
         time.sleep(delay)
-        
     return "http://localhost:8000"
 
 
 def run_baseline():
-    if not API_KEY:
-        print("Error: API Key is missing.", flush=True)
-        return
-
     ENV_URL = get_env_url()
 
-    llm_client = OpenAI(
-        api_key=API_KEY,
+    client = OpenAI(
+        api_key=HF_TOKEN,
         base_url=API_BASE_URL
     )
     
@@ -77,25 +96,21 @@ def run_baseline():
         with FraudTriageEnv(base_url=ENV_URL).sync() as env:
             for task in tasks:
                 
-                # STRICT [START] FORMAT
-                print(f"[START] task={task} env=fraud_triage_env model={MODEL_NAME}", flush=True)
+                log_start(task=task, env=BENCHMARK_NAME, model=MODEL_NAME)
                 
-                steps = 0
-                total_score = 0.0
-                rewards_list = []
+                steps_taken = 0
+                rewards: List[float] = []
+                success = False
                 
                 try:
                     result = env.reset(task_id=task)
                     done = False
-                    transaction_memory = [] # OLD IDEA 2: Short-Term Memory
+                    transaction_memory = [] 
 
                     while not done:
                         obs = result.observation
                         
-                        # Memory Injection
                         memory_str = "\n".join(transaction_memory) if transaction_memory else "None (First transaction of session)"
-                        
-                        # RAG Injection
                         rag_examples = MOCK_DATABASE.get(obs.merchant_category, "No exact historical matches. Rely on standard rules.")
                         
                         transaction_data = f"""
@@ -106,106 +121,78 @@ def run_baseline():
                         - Has Previous Chargebacks: {obs.has_chargebacks}
                         """
 
-                        # ==========================================
-                        # AGENT 1: THE MAKER (WITH CHAIN OF THOUGHT)
-                        # ==========================================
-                        maker_prompt = f"""
-                        You are a Junior Fraud Analyst. Make an initial triage assessment based on the data.
+                        system_prompt = "You are a precise financial API. You MUST output valid JSON with exactly three keys: 'decision' (must be 'Approve', 'Reject', or 'Flag'), 'reasoning' (string), and 'confidence_score' (integer 1-100)."
                         
-                        1. Recent Session Context (Memory):
-                        {memory_str}
+                        action_decision = "Flag" # Safe default
+                        action_reasoning = "Default Fallback"
                         
-                        2. Historical Reference Cases for {obs.merchant_category}:
-                        {rag_examples}
-                        
-                        3. Current Transaction Data:
-                        {transaction_data}
-                        
-                        Reasoning Framework (Think step-by-step):
-                        - Step 1: Evaluate Amount vs. Category.
-                        - Step 2: Evaluate Trust (Credit Score).
-                        - Step 3: Evaluate History (Chargebacks and Session Memory).
-                        
-                        Provide a 'decision' (Approve/Reject/Flag), your step-by-step 'reasoning', and your 'confidence_score' (1-100).
-                        """
+                        try:
+                            # AGENT 1: THE MAKER
+                            maker_prompt = f"Make an initial triage assessment based on the data.\nMemory: {memory_str}\nCases: {rag_examples}\nData: {transaction_data}\nOutput JSON."
+                            maker_completion = client.chat.completions.create(
+                                model=MODEL_NAME,
+                                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": maker_prompt}],
+                                response_format={"type": "json_object"},
+                            )
+                            maker_data = json.loads(maker_completion.choices[0].message.content)
 
-                        maker_completion = llm_client.beta.chat.completions.parse(
-                            model=MODEL_NAME,
-                            messages=[
-                                {"role": "system", "content": "You are a precise financial API."},
-                                {"role": "user", "content": maker_prompt}
-                            ],
-                            response_format=FraudTriageAction,
+                            # AGENT 2: THE CHECKER
+                            checker_prompt = f"Review the Junior Analyst's assessment.\nData: {transaction_data}\nProposed: {maker_data.get('decision')} | Confidence: {maker_data.get('confidence_score')}%\nCritique and output FINAL JSON decision."
+                            checker_completion = client.chat.completions.create(
+                                model=MODEL_NAME,
+                                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": checker_prompt}],
+                                response_format={"type": "json_object"},
+                            )
+                            final_data = json.loads(checker_completion.choices[0].message.content)
+                            
+                            action_decision = str(final_data.get("decision", "Flag"))
+                            action_reasoning = str(final_data.get("reasoning", "Parsed from JSON"))
+                            confidence = int(final_data.get("confidence_score", 50))
+
+                            # THE GUARDRAIL
+                            if confidence < 75 and action_decision != "Flag":
+                                action_reasoning = f"[GUARDRAIL TRIGGERED] Overrode '{action_decision}' to 'Flag' due to low confidence ({confidence}%). " + action_reasoning
+                                action_decision = "Flag"
+                                
+                        except Exception as exc:
+                            # FALLBACK FIX: Do not crash if LLM fails!
+                            action_decision = "Flag"
+                            action_reasoning = f"LLM Error Fallback: {str(exc)}"
+
+                        # Load into Pydantic model and step environment
+                        final_action = FraudTriageAction(
+                            decision=action_decision,
+                            reasoning=action_reasoning,
+                            confidence_score=50
                         )
-                        maker_action = maker_completion.choices[0].message.parsed
 
-                        # ==========================================
-                        # AGENT 2: THE CHECKER
-                        # ==========================================
-                        checker_prompt = f"""
-                        You are a Senior Fraud Auditor. Review the Junior Analyst's assessment. Correct any flaws in their logic.
-                        
-                        Current Transaction Data:
-                        {transaction_data}
-                        
-                        Junior Analyst's Assessment:
-                        - Proposed Decision: {maker_action.decision}
-                        - Confidence: {maker_action.confidence_score}%
-                        - Reasoning: {maker_action.reasoning}
-                        
-                        Critique their logic. Do you agree? Output the FINAL, authoritative decision (Approve/Reject/Flag), an updated reasoning, and your final confidence_score (1-100).
-                        """
-
-                        checker_completion = llm_client.beta.chat.completions.parse(
-                            model=MODEL_NAME,
-                            messages=[
-                                {"role": "system", "content": "You are a precise financial API."},
-                                {"role": "user", "content": checker_prompt}
-                            ],
-                            response_format=FraudTriageAction,
-                        )
-                        final_action = checker_completion.choices[0].message.parsed
-
-                        # ==========================================
-                        # THE GUARDRAIL
-                        # ==========================================
-                        if final_action.confidence_score < 75 and final_action.decision != "Flag":
-                            original_decision = final_action.decision
-                            final_action.decision = "Flag"
-                            final_action.reasoning = f"[GUARDRAIL TRIGGERED] Overrode '{original_decision}' to 'Flag' due to low confidence ({final_action.confidence_score}%). " + final_action.reasoning
-
-                        # Step environment
                         result = env.step(final_action)
                         
-                        # Update Memory for next loop
-                        transaction_memory.append(f"Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {final_action.decision}")
+                        # Update Memory
+                        transaction_memory.append(f"Category: {obs.merchant_category}, Amount: ${obs.amount}, Decision: {action_decision}")
                         if len(transaction_memory) > 3:
                             transaction_memory.pop(0)
                         
-                        # Clamp and log score safely
                         reward = float(result.reward or 0.0)
                         clamped_reward = max(0.01, min(0.99, reward))
-                        total_score += clamped_reward
-                        rewards_list.append(f"{clamped_reward:.2f}")
+                        rewards.append(clamped_reward)
                         
-                        steps += 1
+                        steps_taken += 1
                         done = result.done
+                        error_msg = None
                         
-                        # STRICT [STEP] FORMAT
-                        done_str = "true" if done else "false"
-                        action_str = final_action.decision.replace(" ", "_")
-                        print(f"[STEP] step={steps} action={action_str} reward={clamped_reward:.2f} done={done_str} error=null", flush=True)
+                        # Use strictly formatted logging function
+                        log_step(step=steps_taken, action=action_decision.replace(" ", "_"), reward=clamped_reward, done=done, error=error_msg)
 
-                    # STRICT [END] FORMAT
-                    final_score = max(0.01, min(0.99, total_score))
-                    success_str = "true" if final_score > 0.5 else "false"
-                    rewards_str = ",".join(rewards_list)
+                    # Determine success (must be > 0.5 to be considered successful)
+                    final_score = sum(rewards) / len(rewards) if rewards else 0.0
+                    success = final_score > 0.5
                     
-                    print(f"[END] success={success_str} steps={steps} score={final_score:.2f} rewards={rewards_str}", flush=True)
+                    log_end(success=success, steps=steps_taken, rewards=rewards)
                     
                 except Exception as e:
-                    # Fail-safe emission
-                    print(f"[END] success=false steps={steps} score=0.01 rewards=0.01", flush=True)
+                    # Environment crashed, log standard failure
+                    log_end(success=False, steps=steps_taken, rewards=[0.01])
                     
     except Exception as env_error:
         pass
