@@ -34,7 +34,7 @@ MOCK_DATABASE = {
 }
 
 # ==========================================
-# STRICT LOGGING FUNCTIONS (From Sample)
+# STRICT LOGGING FUNCTIONS (Matching Sample Exactly)
 # ==========================================
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -47,9 +47,11 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
         flush=True,
     )
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+# FIX: Re-added the 'score' parameter to match the parser's regex expectations
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+
 
 def get_env_url(max_retries=15, delay=2):
     urls_to_try = [
@@ -181,18 +183,18 @@ def run_baseline():
                         done = result.done
                         error_msg = None
                         
-                        # Use strictly formatted logging function
                         log_step(step=steps_taken, action=action_decision.replace(" ", "_"), reward=clamped_reward, done=done, error=error_msg)
 
-                    # Determine success (must be > 0.5 to be considered successful)
-                    final_score = sum(rewards) / len(rewards) if rewards else 0.0
+                    # FIX: Safely calculate score and pass it to log_end
+                    raw_score = sum(rewards) / len(rewards) if rewards else 0.01
+                    final_score = max(0.01, min(0.99, raw_score)) # STRICTLY bound between 0 and 1
                     success = final_score > 0.5
                     
-                    log_end(success=success, steps=steps_taken, rewards=rewards)
+                    log_end(success=success, steps=steps_taken, score=final_score, rewards=rewards)
                     
                 except Exception as e:
-                    # Environment crashed, log standard failure
-                    log_end(success=False, steps=steps_taken, rewards=[0.01])
+                    # Environment crashed, log standard failure WITH SCORE
+                    log_end(success=False, steps=steps_taken, score=0.01, rewards=[0.01])
                     
     except Exception as env_error:
         pass
